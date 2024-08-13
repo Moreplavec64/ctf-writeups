@@ -41,7 +41,7 @@ Looking at the source, we see the `getpoints` function.
         window.open("https://www.youtube.com/watch?v=dQw4w9WgXcQ", '_blank').focus();
         visit_ad();
     }
-<script>	
+</script>	
 ```
 
 It opens a rickroll and calls the `visit_ad` function.<br>
