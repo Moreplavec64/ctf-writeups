@@ -1,7 +1,7 @@
 # Flagdle
-### L3ak CTF 2025 - 11 solves
+### L3ak CTF 2025 - 11 Solves
 
-## Challange
+## Challenge
 ```
 Your group is on a 10 day streak! 🔥
 ```
@@ -9,7 +9,7 @@ flagdle [file](./flagdle).
 
 ## Solution
 
-First I tried opening the file in ghidra, which didn't really work out, as ghidra did not recognize builtin go functions, as the binary was stripped, so there were hundreds of unnamed functions. So i decided to use ida instead, which worked out much better.
+First, I tried opening the file in Ghidra, which didn't work because Ghidra did not recognize built-in Go functions. Since the binary was stripped, there were hundreds of unnamed functions. So I decided to use IDA instead, which worked out much better.
 
 I started looking at the `main.main` function and the first thing it does, is calling the function `flagdle_flagdle_ReadConfig`.
 ```c
@@ -18,7 +18,7 @@ I started looking at the `main.main` function and the first thing it does, is ca
 
 ### flagdle/flagdle.ReadConfig
 
-The functions stars by fetching some data from the url
+The function starts by fetching data from a URL:
 ```c
 v10 = net_http__ptr_Client_Get(
           (_DWORD)off_A7CB10,
@@ -29,7 +29,7 @@ response_body = *(_QWORD *)(v10 + 0x40);
 content_length = *(_QWORD *)(v10 + 0x48);
 ```
 
-Even though ida managed to recover function names, types were not. To recover what the offsets mean, I used go itself and the `unsafe.offsetOf` function to get the offset of fields in a struct.
+Although IDA recovered function names, it did not recover types. To recover the meaning of the offsets, I used Go and the `unsafe.Offsetof` function to determine the offset of fields in a struct.
 
 ```go
 var r http.Response
@@ -37,7 +37,7 @@ fmt.Printf("0x%x\n", unsafe.Offsetof(r.Body))
 // 0x40
 ```
 
-after that the content was loaded into a buffer `All`.
+After that, the content was loaded into a buffer named `All`.
 ```c
 All = io_ReadAll(response_body);
 ```
@@ -58,7 +58,7 @@ All = io_ReadAll(response_body);
           v85);
 ```
 
-Slices in go a represented as a struct with three fields: a pointer to the data, the length and the capacity. Even though the pseudocode does not show it well, by looking at the disassembly, we can see how is it done.
+In Go, slices are represented as a struct containing a pointer to the data, the length, and the capacity. Although the pseudocode does not clearly show this, the disassembly confirms it.
 
 ```asm
 0x711C00                 call    io_ReadAll
@@ -78,16 +78,15 @@ Slices in go a represented as a struct with three fields: a pointer to the data,
 0x711C50                 call    google_golang_org_protobuf_proto_Unmarshal
 ```
 
-After the call to `io_ReadAll`, the slice is stored onto the stack from registers it was returned in. According to the [internal abi specification](https://go.googlesource.com/go/+/refs/heads/dev.regabi/src/cmd/compile/internal-abi.md#function-call-argument-and-result-passing), the arguments can be either passed in register or on the stack, depending whether or not there is enough available registers.
+After the call to `io_ReadAll`, the slice is stored onto the stack from the registers in which it was returned. According to the [internal ABI specification](https://go.googlesource.com/go/+/refs/heads/dev.regabi/src/cmd/compile/internal-abi.md#function-call-argument-and-result-passing), arguments are passed either in registers or on the stack, depending whether or not there is enough available registers.
 
 ### Type Recovery
 
-We see that the slice is then passed as the first argument to the `google_golang_org_protobuf_proto_Unmarshal`. Before that though, we see the call to `runtime_newobject`, which allocates a new object on the heap, which is then passed as the second argument to `google_golang_org_protobuf_proto_Unmarshal`.
+Notice that the slice is then passed as the first argument to `google_golang_org_protobuf_proto_Unmarshal`. Before that, a call to `runtime_newobject` allocates an object on the heap, which is then passed as the second argument to `google_golang_org_protobuf_proto_Unmarshal`.
 
-Looking closer at the type that was passed to `runtime_newobject`, we discover some structure-looking data in `.rodata` section.
-If we look at the [source code](https://github.com/golang/go/blob/master/src/runtime/malloc.go#L1746) of `runtime_newobject`, we see that it takes one argument of type `*_type`, which is defined in [internal/abi/type.go](https://github.com/golang/go/blob/go1.23.1/src/internal/abi/type.go#L20).
+Looking closer at the type passed to `runtime_newobject`, I discovered a structure in the `.rodata` section. If we look at the [source code](https://github.com/golang/go/blob/master/src/runtime/malloc.go#L1746) of `runtime_newobject`, we see that it takes one argument of type `*_type`, defined in [internal/abi/type.go](https://github.com/golang/go/blob/go1.23.1/src/internal/abi/type.go#L20).
 
-The most interesting field in the type is probably `Str`, which is a offset into a king of type name table. The table position is defined in the at runtime by the `module_data` structure, that has a field `types`, which points to the table. For details how it is resolved see [resolveNameOff](https://github.com/golang/go/blob/go1.23.1/src/runtime/type.go#L118).
+The most interesting field in the type is likely `Str`, an offset into a type name table. The table position is defined at runtime by the `module_data` structure, which has a `types` field pointing to the table.  For details how it is resolved see [resolveNameOff](https://github.com/golang/go/blob/go1.23.1/src/runtime/type.go#L118).
 
 First, I added a type into IDA to look at the type structure more easily.
 ```c
@@ -107,19 +106,17 @@ struct go_rtype // sizeof=0x30
 };
 ```
 
-So we then see, after retyping the data to `go_rtype`, that the `Str` field is at offset `104FCh`. I then added this to the `.rodata` base address and got.
-
+After retyping the data to `go_rtype`, we can see that the `Str` field is at offset `104FCh`. I then added this offset to the `.rodata` base address and got:
 ```
 .rodata:00000000007254FC                 db    1
 .rodata:00000000007254FD                 db  15h
 .rodata:00000000007254FE aPbEncryptedset db '*pb.EncryptedSettings',0
 ```
 
-The Name structure that stores the type name starts with some metadata and length of the string and is defined [here](https://github.com/golang/go/blob/go1.23.1/src/internal/abi/type.go#L590).
+The `Name` structure that stores the type name starts with some metadata and the length of the string. It is defined [here](https://github.com/golang/go/blob/go1.23.1/src/internal/abi/type.go#L590).
 
 #### GoReSym
-I also tried using GoReSym to recover the types, but with no success. But it did not go in vain, as it did told me the version and dependencies of the binary.
-
+I also attempted using GoReSym to recover the types but without success. However, it did provide the version and dependencies of the binary.
 ```
 ----GoReSym----
 Arch:                amd64
@@ -130,12 +127,12 @@ Dep0.Version         v1.36.6
 ```
 
 #### Unmarshal
-The call to unmarshal takes a slice of bytes and a message struct. We see that the message struct passed is the one returned by `runtime_newobject`, which is of type `EncryptedSettings`. The only return value is an error, which will be returned in `rax`.
+The call to unmarshal takes a slice of bytes and a message struct. We can see that the message struct is the one returned by `runtime_newobject` and is of type `EncryptedSettings`. The only return value is an error, returned in `rax`.
 
 Now the program is accessing fields of `EncryptedSettings`, therefore it would be useful to know its structure.
 
-### Proto file recovery
-Luckily of us, the protobuf file, or rather its internal parsed rawDesc representation, is compiled into the binary. I ended up using gdb to find its content by searching for the string `EncryptedSettings` in the binary.
+### Proto File Recovery
+Fortunately, the protobuf file, or rather its internal parsed rawDesc representation, is compiled into the binary. I ended up using gdb to find its content by searching for the string `EncryptedSettings` in the binary.
 ```
 pwndbg> search EncryptedSettings
 Searching for byte: b'EncryptedSettings'
@@ -145,7 +142,7 @@ flagdle         0x859225 0x6574707972636e45 ('Encrypte')
 // ... function names from pctl
 ```
 
-There was some function and type names that contained the string but I was looking for the protobuf file that is generated when you use protoc, therefore these two stood out. 
+There were some function and type names that contained the string, but I was looking for the protobuf file that is generated when you use protoc, therefore these two stood out.
 
 ```
 pwndbg> hexdump 0x8591f9-0x200 0x500
@@ -193,7 +190,7 @@ pwndbg> hexdump 0x8591f9-0x200 0x500
 +0300 0x8592f9  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  │........│........│
 ```
 
-Using our good friend ChatGPT, he generated a proto file that when i compiled generated the same rawdesc as the one in the binary.
+Using ChatGPT, I generated a proto file that, when compiled, produced the same rawdesc as the one in the binary.:
 ```proto
 syntax="proto3";
 
@@ -235,7 +232,7 @@ message EncryptedSettings {
 
 I verified by running `protoc --go_out=. flagdle.proto` and checking the generated `pb.pb.go` file, that the types match.
 
-#### EncryptedConfig parsing
+#### EncryptedConfig Parsing
 ```c
   v37 = *(unsigned int *)(encrypted_config + 8); // Encryption Mode
   v40 = *(_QWORD *)(encrypted_config + 0x30); // game settings length
@@ -243,9 +240,9 @@ I verified by running `protoc --go_out=. flagdle.proto` and checking the generat
   v41 = *(_QWORD *)(encrypted_config + 0x38); // game settings capacity
 ```
 
-Then a path based on the encryption mode is taken. I now unmarshaled the data myself and looked at the mode used. It was EncryptionModeAES so i looked at the `2` path.
+Then, a branch is taken based on the encryption mode. I unmarshaled the data to determine the mode used. It was EncryptionModeAES, so I focused on the `2` branch.
 
-#### AES decryption 
+#### AES Decryption
 ```c
 v75 = *(_QWORD *)(encrypted_config + 0x38);  // game settings capacity
 v74 = *(_QWORD *)(encrypted_config + 0x30); // game settings length
@@ -294,44 +291,40 @@ v29 = &off_84E400;
 v30 = &unk_A8E0C0;
 unmarshal_error = google_golang_org_protobuf_proto_Unmarshal(
                     v83, // decrypted game settings
-                    (int)v74 - (int)v57, // length of decrypted game settings without padding
+                    (int)v74 - (int)v57, // length without padding
                     v74, // capacity 
                     (unsigned int)&off_84E400, // type - protoreflect.ProtoMessage
                     (unsigned int)&unk_A8E0C0, // location
                     );
 ```
 
-### Flagdle/flagdle.NewGame
+### flagdle/flagdle.NewGame
 After the config is read and no error was encountered, the `NewGame` function is called.
 ```c
   v10 = flagdle_flagdle_NewGame(Config, v29, v30);
 ```
-In the function, global variables, that point to offsets of the parsed config are accessed, I use go do print the offsets of each attribute of the `Config`.
+Within this function, global variables pointing to offsets in the parsed config are accessed. Using Go, I printed the offsets of each attribute of the `Config` struct:
 ```go
 var r pb.Config
-fmt.Printf("0x%x\n", unsafe.Offsetof(r.FlagHash)) //0x28
-fmt.Printf("0x%x\n", unsafe.Offsetof(r.Games)) // 0x8
+fmt.Printf("0x%x\n", unsafe.Offsetof(r.FlagHash)) // 0x28
+fmt.Printf("0x%x\n", unsafe.Offsetof(r.Games))      // 0x8
 fmt.Printf("0x%x\n", unsafe.Offsetof(r.WordLength)) // 0x20
-fmt.Printf("0x%x\n", unsafe.Offsetof(r.Wordlist)) // 0x40
+fmt.Printf("0x%x\n", unsafe.Offsetof(r.Wordlist))   // 0x40
 ```
 
-By this output, I renameed the offsets.
+Based on this output, I renamed the offsets:
 ```asm
 .bss:0000000000A8E0C0 GAME_SETTINGS   dq ?                    ; DATA XREF: flagdle_flagdle_ReadConfig+2C2↑o
-.bss:0000000000A8E0C0                                         ; flagdle_flagdle_ReadConfig+328↑o ...
 .bss:0000000000A8E0C8 GAMES           dq ?                    ; DATA XREF: flagdle_flagdle_NewGame+24↑r
 .bss:0000000000A8E0D0 GAMES_LENGTH    dq ?                    ; DATA XREF: flagdle_flagdle_NewGame+1D↑r
-.bss:0000000000A8E0D8                 align 20h
 .bss:0000000000A8E0E0 WORD_LENGTH     dd ?                    ; DATA XREF: flagdle_flagdle_NewGame+23A↑r
-.bss:0000000000A8E0E4                 align 8
 .bss:0000000000A8E0E8 FLAG_HASH       dq ?                    ; DATA XREF: flagdle_flagdle__ptr_FlagdleGame_ReviewGame:loc_71320A↑r
 .bss:0000000000A8E0F0 FLAG_HASH_LENGTH dq ?                   ; DATA XREF: flagdle_flagdle__ptr_FlagdleGame_ReviewGame+F9↑r
-.bss:0000000000A8E0F8                 align 20h
 .bss:0000000000A8E100 WORD_LIST       dq ?                    ; DATA XREF: flagdle_flagdle_NewGame+71↑r
 .bss:0000000000A8E108 WORD_LIST_LENGTH dq ?                   ; DATA XREF: flagdle_flagdle_NewGame+78↑r
 ```
 
-this made the pseudocode quite easy to understand.
+This made the pseudocode easier to understand:
 ```c
 games_length = GAMES_LENGTH;
 games = GAMES;
@@ -341,7 +334,7 @@ if ( rand_i >= games_length )
 random_game_ptr = *(_QWORD *)(games + 8 * rand_i);
 ```
 
-##### Wordlist parsing
+##### Wordlist Parsing
 ```c
 map = runtime_makemap_small();
 v49 = map;
@@ -355,9 +348,9 @@ while ( to_add_ctr > 0 )
   // and 1 is stored there(from the type definition we know that the value is a bool), therefore a true.
   *(_BYTE *)runtime_mapassign_faststr(
                 (unsigned int)"\b", // map[string]bool
-                map,                // map
+                map,
                 *curr_word,         // string
-                curr_word[1],       // string length
+                curr_word[1]        // string length
               ) = 1;
   curr_word = v53 + 2;
   to_add_ctr = v47 - 1;
@@ -365,7 +358,7 @@ while ( to_add_ctr > 0 )
 }
 ```
 
-After the wordlist is parsed, the random game is parsed further. Again using go I recovered the offsets for each field of the `Game` struct.
+After the wordlist is parsed, the random game is further processed. I used Go to determine the offsets for each field of the `Game` struct:
 ```yaml
 GAME
 Offset of target:       - data:     0x8
@@ -384,7 +377,7 @@ Offset of gameid:       - data:     0x68
                         - length:   0x70
 ```
 
-###### Create flag selectors slice from randomGame.FlagSelectors
+###### Creating Flag Selectors Slice from randomGame.flagSelectors
 ```c
 flag_selectors = *(_QWORD *)(random_game_ptr + 0x50);
 v52 = flag_selectors;
@@ -429,11 +422,12 @@ while ( i < flag_selectors_length )
 }
 ```
 
-After seeing this i made a educated guess that this creates a deep copy of the Game structure, that was before parsed with the type of `protoreflect.ProtoMessage`, and now is copied into a new structure of type `FlagdleGame`, which is also returned from this method. 
+Based on this, I deduced that the code performs a deep copy of the Game structure that was initially parsed as a `protoreflect.ProtoMessage`, converting it into a new structure of type `FlagdleGame`. 
 The `FlagdleGame` struct is not the same as the `Game` struct, so I always referenced the NewGame method to link back to the original `Game` struct. There were some optimalizations that called offsets in the method `runtime.duffcopy` which lead to the pointers being shifted and the offsets not really match the use. I decided to ignore this and not try to map the fields of the `FlagdleGame` and just vibeguess it when I see its use. 
 
-### flagdle/(*flagdle.FlagdleGame).Play
-After the game is selected and parsed, the `Play` method is called on the `FlagdleGame` struct.
+### flagdle/flagdle.(*FlagdleGame).Play
+
+After the game is selected and parsed, the `Play` method is called on the `FlagdleGame` struct:
 ```c
   v21 = flagdle_flagdle__ptr_FlagdleGame_Play(GAME, 0);
 ```
@@ -454,7 +448,7 @@ fmt_Fprintf(
   1 // capacity of the varargs
 );
 ```
-This gives us the information that the game id is on the 8th position of the `FlagdleGame` struct.
+This gives us the information that the game ID is on the 8th position of the `FlagdleGame` struct.
 Moving further in the function, we see:
 ```c
 current_guess_index = flagdle_game[3];
@@ -473,7 +467,7 @@ fmt_Fprintf(
   16,
   (unsigned int)&v264,
   2,
-  2,
+  2
 );
 ```
 logic that prints the number of the current ugess and the number of allowed guesses. We can therefore mark the `flagdle_game[3]` and `flagdle_game[10]` as such.
@@ -495,7 +489,8 @@ fmt_Fscanln(
 ```
 
 ### flagdle/flagdle.(*FlagdleGame).MakeMove
-After the input is read, the MakeMove function is called
+
+After the input is read, the `MakeMove` function is called:
 ```c
  Move = flagdle_flagdle__ptr_FlagdleGame_MakeMove(
   (_DWORD)flagdle_game,
@@ -503,8 +498,8 @@ After the input is read, the MakeMove function is called
   v266[1]
   );
 ```
-into the function, the flagdle_game is passed alongside with the read input and its length as the v266 is of type `*string`, and strings in go are represented as a pointer to the string and its length, so v266[1] is the length.
-Looking into the function, we see that the length is compared agains another filed in the `FlagdleGame` struct.
+`flagdle_game` is passed into this function, alongside with the read input and its length as the v266 is of type `string`, and strings in go are represented as a pointer to the data and its length, so v266[1] is the length.
+Looking into the function, we see that the length is compared against another field in the `FlagdleGame` struct.
 ```c
 if ( flagdle_game[11] != a3 )
 {
@@ -517,7 +512,7 @@ if ( flagdle_game[11] != a3 )
 ```
 so we can mark the `flagdle_game[11]` as the length of the word that is expected to be guessed.
 
-Then the input is uppercased and checked agains the wordlist, when the Game was parsed, we created a map of the wordlist, which is now accessed.
+Then the input is converted to uppercase and checked against the wordlist. The wordlist, previously parsed into a map, is stored in `flagdle_game[12]`, a pointer to `map[string]bool`:
 ```c
 v12 = (_DWORD *)strings_ToUpper(user_input, guess_length, guess_length, a4, a5, a6, a7, a8, a9);
   v13 = v11;
@@ -556,7 +551,8 @@ if ( *(_DWORD *)(runes_of_game_target + 4 * current_index) == (_DWORD)curr_inp_r
   // Then the orange and gray cells are set, in the v31 slice
 ```
 
-the program then stores the current guess(capitalized) into `flagdle_game[2]`, which is a slice of strings.
+The program then stores the current guess(capitalized) into `flagdle_game[2]`, which is a slice of strings.
+
 ```c
 v66 = flagdle_game[4];
 v67 = flagdle_game[3] + 1;
@@ -604,7 +600,7 @@ pwndbg> hexdump 0xc000472028
 # and i see my guesses
 ```
 
-So my idea was right an I will not go deepr into it.
+So my idea was right an I will not go deeper into it.
 Moving forward, I see another slice being added to, which is at `flagdle_game[5]`. It's type is `[]*flagdle.BoardRow`. I find the type from the call to the function `growSlice`, which takes a pointer to the type of the element being added.
 ```c
 v75 = v65[7];
@@ -650,7 +646,7 @@ I see that the type `flagdle.BoardCell`, of which the slice is made of, consists
 
 At the end of the function there is this code snippet
 ```c
-//v65[1] is the target length
+// v65[1] is the target length
 if ( max_index != v65[1] )
   goto LABEL_55;
 if ( !(unsigned __int8)runtime_memequal(*v65, uppercase_user_inp) )
@@ -701,7 +697,7 @@ else if ( game_status == 3 ){
         47,
         (unsigned int)&v257,
         1,
-        1,
+        1
       );
   }
 }
@@ -709,7 +705,7 @@ else if ( game_status == 3 ){
 
 So our goal is to get the score of 4 or more and the game will give us a flag.
 
-### Flagdle/flagdle.(*FlagdleGame).ReviewGame
+### flagdle/flagdle.(*FlagdleGame).ReviewGame
 
 ```c
 guesses_length = flagdle_game[3];
@@ -720,7 +716,7 @@ last_guess_offset = 16 * last_guess_index;
 last_guesses_slice = flagdle_game[2];
 last_guess_length = *(_QWORD *)(last_guesses_slice + last_guess_offset + 8);
 last_guess_string = *(_QWORD *)(last_guesses_slice + last_guess_offset);
-if ( flagdle_game[1] != last_guess_length )   // check if the lengths of target and last guess equeal
+if ( flagdle_game[1] != last_guess_length )   // check if the lengths of target and last guess equal
   return 0;
 target_string = *flagdle_game;
 if ( !(unsigned __int8)runtime_memequal(last_guess_string, *flagdle_game) )// check that they equal
@@ -748,14 +744,11 @@ if ( (unsigned __int8)runtime_memequal(&v41, FLAG_HASH) )
 return 4;
 ```
 
-The functions starts with some basic checks, checking if the last guess was correct. Then adding a point when all of the guesses were used.
+The function first checks if the last guess was correct. Next, if all guesses were used, it adds a point. Then, it calls `ValidateBoard`.
 
-Then it calls the `ValidateBoard` function.
+#### flagdle/flagdle.(*FlagdleGame).ValidateBoard
 
-#### Flagdle/flagdle.(*FlagdleGame).ValidateBoard
-
-In this function, the program checks the `BoardRows` slice that was generated during the `MakeMove` function against the value of the `flagdle_game[17]`. I assume that this will contain the slice that the `Game` contains, the `RowHashes`.
-
+    This function checks the `BoardRows` slice (generated during `MakeMove`) against `flagdle_game[17]`. I assume that this will contain the slice that the `Game` contains, the `RowHashes`.
 ```c
 boardrows_length = flagdle_game[6];
 expected_row_hashes_length = flagdle_game[18];
@@ -810,41 +803,41 @@ The function itself is quite straightforward, it iterates over the `BoardRows`, 
 
 #### Flagdle/flagdle.(*FlagdleGame).HashRow
 ```c
-  slice = *slice_ptr;
-  length = slice_ptr[1];
-  v11 = 0;
-  slice_built = 0;
-  curr_i = 0;
-  while ( length > 0 )
+slice = *slice_ptr;
+length = slice_ptr[1];
+v11 = 0;
+slice_built = 0;
+curr_i = 0;
+while ( length > 0 )
+{
+  ++curr_i;
+  val_to_be_added = *(_QWORD *)(slice + 8);
+  if ( v11 < curr_i )
   {
-    ++curr_i;
-    val_to_be_added = *(_QWORD *)(slice + 8);
-    if ( v11 < curr_i )
-    {
-      v29 = length;
-      v31 = slice;
-      v28 = *(_QWORD *)(slice + 8);
-      a4 = 1;
-      new_slice = runtime_growslice(
-                    slice_built,
-                    curr_i,
-                    v11,
-                    1,
-                    (unsigned int)&uint8_ptr_type,
-                    length,
-                    val_to_be_added,
-                  );
-      slice = v31;
-      length = v29;
-      LOBYTE(val_to_be_added) = v28;
-      a5 = v16;
-      slice_built = new_slice;
-      v11 = a5;
-    }
-    *(_BYTE *)(curr_i + slice_built - 1) = val_to_be_added;
-    slice += 16;
-    --length;
+    v29 = length;
+    v31 = slice;
+    v28 = *(_QWORD *)(slice + 8);
+    a4 = 1;
+    new_slice = runtime_growslice(
+                  slice_built,
+                  curr_i,
+                  v11,
+                  1,
+                  (unsigned int)&uint8_ptr_type,
+                  length,
+                  val_to_be_added,
+                );
+    slice = v31;
+    length = v29;
+    LOBYTE(val_to_be_added) = v28;
+    a5 = v16;
+    slice_built = new_slice;
+    v11 = a5;
   }
+  *(_BYTE *)(curr_i + slice_built - 1) = val_to_be_added;
+  slice += 16;
+  --length;
+}
 v27 = v11;
 v30 = slice_built;
 v32 = (_OWORD *)runtime_newobject(&uint_16_elem_slice_ptr_type);
@@ -854,11 +847,11 @@ result = v32;
 return result;
 ```
 
-So what it basically does is, that it builds a slice of bytes, which are the `CellStatus` values of the `BoardRow` items. Then it passes the slice to the `crypto_md5_Sum` function, which hashes the slice and returns the hash in a new slice of type `[16]uint8`.
+So what it basically does is, that it builds a slice of bytes, that are the `CellStatus` values of the `BoardRow` items. Then it passes the slice to the `crypto_md5_Sum` function, which hashes the slice and returns the hash in a new slice of type `[16]uint8`.
 
-### Flagdle/flagdle.(*FlagdleGame).SelectFlag
+#### flagdle/flagdle.(*FlagdleGame).SelectFlag
 
-What the `SelectFlag` does, is that is iterates over the `flagSelectors` slice, which is a slice of `CellID` structs. Each `CellID` struct is composed of a `Row` and a `Column` value, which are used to access the `BoardRow` slice to retrieve the Row-th `BoardRow` and the Column-th `BoardCell` in that row. The `Rune` value of the `BoardCell` is then used as an `XOR` key agains the `FlagKey` slice.
+`SelectFlag` iterates over the `flagSelectors` slice, a slice of `CellID` structs (each composed of a `Row` and `Column`). These values are used to access  the `BoardRow` slice to retrieve the Row-th `BoardRow` and the Column-th `BoardCell` in that row. The `Rune` value from the `BoardCell` is XORed with the corresponding byte in the `FlagKey`. 
 
 For 5*, also the `FlagHash` must match the selected flag. 
 
@@ -870,7 +863,7 @@ To get the flag, we need to:
  - The last guess must match the `Target` word
  - The values selected by the `FlagSelectors` XORed with the `FlagKey` must produce a hash that matches the `FlagHash`
 
-#### Annotated FlagdleGame struct
+#### Annotated FlagdleGame Struct
 Throughout the reversing I was keeping some notes of offsets, the most important I think was the `FlagdleGame`, which in the end looked like this:
 ```c
 flagdle_game[0]  // Game target (string)
@@ -895,11 +888,11 @@ flagdle_game[18] // expected row hashes length
 flagdle_game[19] // expected row hashes capacity
 flagdle_game[20] 
 flagdle_game[21] 
-``` 
+```
 
 ## Solution
 
-First things first, I'll need to generate the go file from the proto file using `protoc` and then unmarshal the `EncryptedSettings`. Then, decrypt them and parse the decrypted config.
+First, I'll need to generate the go file from the proto file using `protoc` and then unmarshal the `EncryptedSettings`. Then, decrypt them and parse the decrypted config.
 
 To get the flag, I need to satisfy all the game review conditions. First I need to create mappings between the `RowHash` and board states. Then I need to enumerate the wordlist and find all words that, given a specific game, match the specified `RowHash`. Having this information, I'll be able to produce a set of characters, that could be the i-th XOR key for the i-th character of the flag.
 
